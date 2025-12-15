@@ -8,7 +8,7 @@ import pickle
 import warnings
 from fastai.callback.core import CancelBatchException
 from fastai.learner import Learner, load_learner, Recorder
-from fastai.callback.schedule import *
+# from fastai.callback.schedule import *
 from fastai.optimizer import Adam
 from fastai.losses import MSELossFlat
 from .imports import *
