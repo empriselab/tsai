@@ -14,16 +14,62 @@ from .layers import *
 # InceptionTime: Finding AlexNet for Time Series Classification. arXiv preprint arXiv:1909.04939.
 # Official InceptionTime tensorflow implementation: https://github.com/hfawaz/InceptionTime
 
+class CustomMLP(nn.Module):
+    def __init__(self, input_size, hidden_sizes, output_size, activation_fn=nn.LeakyReLU, use_batchnorm=True, dropout_prob=0.0):
+        """
+        Initializes the MLP with optional BatchNorm and Dropout layers.
+        
+        Parameters:
+        input_size (int): Number of input features.
+        hidden_sizes (list of int): List containing the number of units in each hidden layer.
+        output_size (int): Number of output units.
+        activation_fn (torch.nn.Module): Activation function to use at each layer.
+        use_batchnorm (bool): Whether to include BatchNorm layers.
+        dropout_prob (float): Dropout probability, applies dropout after each hidden layer.
+        """
+        super().__init__()
+        
+        # Create a list to store layers
+        layers = []
+        
+        # Add input layer and hidden layers
+        current_input_size = input_size
+        for hidden_size in hidden_sizes:
+            layers.append(nn.Linear(current_input_size, hidden_size))
+            
+            # Optionally add BatchNorm
+            if use_batchnorm:
+                layers.append(nn.BatchNorm1d(hidden_size))
+            
+            # Add activation function
+            layers.append(activation_fn())
+            
+            # Optionally add Dropout
+            if dropout_prob > 0.0:
+                layers.append(nn.Dropout(dropout_prob))
+            
+            current_input_size = hidden_size
+        
+        # Add output layer (without BatchNorm, activation, or dropout)
+        layers.append(nn.Linear(current_input_size, output_size))
+        
+        # Stack all layers using nn.Sequential
+        self.model = nn.Sequential(*layers)
+    
+    def forward(self, x):
+        return self.model(x)
+
 class InceptionModule(Module):
-    def __init__(self, ni, nf, ks=40, bottleneck=True):
-        ks = [ks // (2**i) for i in range(3)]
+    def __init__(self, ni, nf, ks=250, num_conv=7, bias=True, bottleneck=True):
+        ks = [ks // (2**i) for i in range(num_conv)]
+        print("Conv kernels: ", ks)
         ks = [k if k % 2 != 0 else k - 1 for k in ks]  # ensure odd ks
         bottleneck = bottleneck if ni > 1 else False
-        self.bottleneck = Conv1d(ni, nf, 1, bias=False) if bottleneck else noop
-        self.convs = nn.ModuleList([Conv1d(nf if bottleneck else ni, nf, k, bias=False) for k in ks])
-        self.maxconvpool = nn.Sequential(*[nn.MaxPool1d(3, stride=1, padding=1), Conv1d(ni, nf, 1, bias=False)])
+        self.bottleneck = Conv1d(ni, nf, 1, bias=bias) if bottleneck else noop
+        self.convs = nn.ModuleList([Conv1d(nf if bottleneck else ni, nf, k, bias=True) for k in ks])
+        self.maxconvpool = nn.Sequential(*[nn.MaxPool1d(3, stride=1, padding=1), Conv1d(ni, nf, 1, bias=True)])
         self.concat = Concat()
-        self.bn = BN1d(nf * 4)
+        self.bn = BN1d(nf * (num_conv + 1))
         self.act = nn.ReLU()
 
     def forward(self, x):
@@ -35,13 +81,15 @@ class InceptionModule(Module):
 
 @delegates(InceptionModule.__init__)
 class InceptionBlock(Module):
-    def __init__(self, ni, nf=32, residual=True, depth=6, **kwargs):
+    def __init__(self, ni, nf=32, ks=250, num_conv=7, residual=True, depth=6, bias=True, **kwargs):
         self.residual, self.depth = residual, depth
         self.inception, self.shortcut = nn.ModuleList(), nn.ModuleList()
+        self.ks=ks
+        self.num_conv=num_conv
         for d in range(depth):
-            self.inception.append(InceptionModule(ni if d == 0 else nf * 4, nf, **kwargs))
+            self.inception.append(InceptionModule(ni if d == 0 else nf * (num_conv + 1), nf, ks=self.ks, num_conv=self.num_conv, bias=bias, **kwargs))
             if self.residual and d % 3 == 2: 
-                n_in, n_out = ni if d == 2 else nf * 4, nf * 4
+                n_in, n_out = ni if d == 2 else nf * (num_conv + 1), nf * (num_conv + 1)
                 self.shortcut.append(BN1d(n_in) if n_in == n_out else ConvBlock(n_in, n_out, 1, act=None))
         self.add = Add()
         self.act = nn.ReLU()
@@ -56,14 +104,19 @@ class InceptionBlock(Module):
     
 @delegates(InceptionModule.__init__)
 class InceptionTime(Module):
-    def __init__(self, c_in, c_out, seq_len=None, nf=32, nb_filters=None, **kwargs):
+    def __init__(self, c_in, c_out, seq_len=None, nf=32, num_conv=7, nb_filters=None, **kwargs):
+        num_conv=7
         nf = ifnone(nf, nb_filters) # for compatibility
-        self.inceptionblock = InceptionBlock(c_in, nf, **kwargs)
+        self.inceptionblock = InceptionBlock(c_in, nf, depth=6, **kwargs)
         self.gap = GAP1d(1)
-        self.fc = nn.Linear(nf * 4, c_out)
+        self.fc = nn.Linear(nf * (num_conv + 1), c_out)
+        self.mlp = CustomMLP(nf * (num_conv + 1), hidden_sizes=[256*8, 256*8, 256], output_size=c_out, dropout_prob=0.1)
+        # print("FC!")
+        print("MLP!")
 
     def forward(self, x):
         x = self.inceptionblock(x)
-        x = self.gap(x)
-        x = self.fc(x)
+        emb = self.gap(x)
+        # x = self.fc(x)
+        x = self.mlp(emb)
         return x
