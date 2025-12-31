@@ -62,7 +62,6 @@ class CustomMLP(nn.Module):
 class InceptionModule(Module):
     def __init__(self, ni, nf, ks=250, num_conv=7, bias=True, bottleneck=True):
         ks = [ks // (2**i) for i in range(num_conv)]
-        print("Conv kernels: ", ks)
         ks = [k if k % 2 != 0 else k - 1 for k in ks]  # ensure odd ks
         bottleneck = bottleneck if ni > 1 else False
         self.bottleneck = Conv1d(ni, nf, 1, bias=bias) if bottleneck else noop
@@ -111,8 +110,6 @@ class InceptionTime(Module):
         self.gap = GAP1d(1)
         self.fc = nn.Linear(nf * (num_conv + 1), c_out)
         self.mlp = CustomMLP(nf * (num_conv + 1), hidden_sizes=[256*8, 256*8, 256], output_size=c_out, dropout_prob=0.1)
-        # print("FC!")
-        print("MLP!")
 
     def forward(self, x):
         x = self.inceptionblock(x)
